@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+
+# Mutable local state and generated vector index
+workbench.db
+workbench.db-shm
+workbench.db-wal
+data/vector_store/

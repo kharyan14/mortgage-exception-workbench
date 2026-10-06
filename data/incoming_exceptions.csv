@@ -1,0 +1,6 @@
+case_id,exception_text,expected_type,expected_action,sensitive_case
+CASE-101,"The borrower forgot to sign the form.",signature,request_missing_document,False
+CASE-102,"The loan file is missing the most recent paystub required for income verification.",income,request_missing_document,False
+CASE-103,"The property address in the appraisal differs from the deed record.",address,propose_field_correction,False
+CASE-104,"The case includes a rare foreign-language tax document that needs specialist review.",specialist,route_to_specialist,False
+CASE-105,"The loan file references a suspicious transfer document outside the standard workflow.",unknown,abstain,True
