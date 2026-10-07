@@ -124,6 +124,7 @@ def test_resolution_suggestion_has_expected_shape():
         "closest_case_id",
         "confidence",
         "human_review_required",
+        "guardrails",
     }
     assert suggestion["suggested_action"] in {"request_missing_document", "propose_field_correction", "route_to_specialist", "abstain"}
     assert suggestion["human_review_required"] is True or suggestion["confidence"] < 0.80

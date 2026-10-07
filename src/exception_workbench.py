@@ -233,6 +233,9 @@ def _normalize_action_resolution(resolution: str) -> str:
     return "abstain"
 
 
+from src.guardrails import evaluate_guardrails
+
+
 def build_resolution_suggestion(
     case_id: str,
     exception_text: str,
@@ -241,6 +244,12 @@ def build_resolution_suggestion(
     matches: Optional[pd.DataFrame] = None,
 ) -> Dict[str, Any]:
     matches = matches if matches is not None else find_similar_cases(exception_text, top_k=top_k)
+    guardrail_eval = evaluate_guardrails(
+        exception_text=exception_text,
+        matches=matches,
+        sensitive_case=sensitive_case,
+    )
+
     if matches.empty:
         return {
             "case_id": case_id,
@@ -250,6 +259,7 @@ def build_resolution_suggestion(
             "closest_case_id": "",
             "confidence": 0.0,
             "human_review_required": True,
+            "guardrails": guardrail_eval,
         }
     best_match = matches.iloc[0]
     confidence = float(best_match["similarity"])
@@ -270,7 +280,14 @@ def build_resolution_suggestion(
             f"The approved resolution was '{best_match['approved_resolution']}'."
         )
 
-    human_review_required = bool(confidence < 0.80 or sensitive_case or suggested_action == "abstain")
+    # Override suggestion if guardrails forced action (e.g. prompt injection)
+    if guardrail_eval["force_action"]:
+        suggested_action = guardrail_eval["force_action"]
+        reason = f"Guardrail trip ({'; '.join(guardrail_eval['reasons'])}). " + reason
+
+    human_review_required = bool(
+        confidence < 0.80 or sensitive_case or suggested_action == "abstain" or guardrail_eval["force_human_review"]
+    )
 
     return {
         "case_id": case_id,
@@ -280,6 +297,7 @@ def build_resolution_suggestion(
         "closest_case_id": str(best_match["case_id"]),
         "confidence": round(confidence, 4),
         "human_review_required": human_review_required,
+        "guardrails": guardrail_eval,
     }
 
 

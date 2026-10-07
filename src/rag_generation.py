@@ -11,6 +11,9 @@ DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_GENERATION_MODEL = "llama3.1:latest"
 
 
+from src.guardrails import detect_prompt_injection, sanitize_pii, validate_llm_output
+
+
 def generate_grounded_response(
     query: str,
     evidence: Iterable[Tuple[str, str, str]],
@@ -23,10 +26,18 @@ def generate_grounded_response(
     if not evidence_items:
         raise ValueError("At least one retrieved evidence item is required.")
 
+    # Guardrail: Check for prompt injection in incoming query
+    is_injection, injection_reason = detect_prompt_injection(query)
+    if is_injection:
+        raise ValueError(f"Guardrail safety block: {injection_reason}")
+
+    # Guardrail: Sanitize PII in query and evidence before prompt construction
+    sanitized_query = sanitize_pii(query)
+
     evidence_context = "\n\n".join(
         f"[{index}] Prior case {case_id}\n"
-        f"Retrieved chunk: {chunk}\n"
-        f"Approved prior resolution: {approved_resolution}"
+        f"Retrieved chunk: {sanitize_pii(chunk)}\n"
+        f"Approved prior resolution: {sanitize_pii(approved_resolution)}"
         for index, (case_id, chunk, approved_resolution) in enumerate(evidence_items, start=1)
     )
     prompt = (
@@ -36,7 +47,7 @@ def generate_grounded_response(
         "enough to support a next step, say that the reviewer should investigate. Give a brief "
         "evidence-grounded explanation and a cautious suggested next step. Cite supporting "
         "prior cases using their case IDs.\n\n"
-        f"Incoming exception:\n{query}\n\n"
+        f"Incoming exception:\n{sanitized_query}\n\n"
         f"Retrieved evidence:\n{evidence_context}\n\n"
         "Evidence-grounded reviewer note:"
     )
@@ -72,4 +83,11 @@ def generate_grounded_response(
     answer = str(result.get("response", "")).strip()
     if not answer:
         raise RuntimeError("Ollama returned an empty generated response.")
-    return answer
+
+    # Guardrail: Validate output against policy rules
+    output_guardrail = validate_llm_output(answer)
+    if not output_guardrail["is_safe"]:
+        violations_str = "; ".join(output_guardrail["violations"])
+        return f"[Guardrail Flagged Output]: {output_guardrail['sanitized_text']}\n\n(Safety Notice: {violations_str})"
+
+    return output_guardrail["sanitized_text"]

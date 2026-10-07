@@ -311,6 +311,33 @@ if case["sensitive_case"]:
 elif suggestion["human_review_required"]:
     st.warning("This suggestion is below the 0.80 project threshold and requires human review.")
 
+st.subheader("🛡️ Safety & Policy Guardrails")
+guardrails = suggestion.get("guardrails", {})
+g_cols = st.columns(4)
+
+if guardrails.get("prompt_injection_detected"):
+    g_cols[0].error("🚨 Injection Flagged")
+else:
+    g_cols[0].success("🛡️ Input Safe")
+
+if guardrails.get("pii_detected"):
+    g_cols[1].warning(f"🔒 PII Redacted: {', '.join(guardrails.get('pii_types', []))}")
+else:
+    g_cols[1].success("🔒 No PII Found")
+
+if guardrails.get("grounding_passed"):
+    g_cols[2].success("🎯 Grounding Verified")
+else:
+    g_cols[2].error("⚠️ Low Grounding")
+
+if guardrails.get("output_safe", True):
+    g_cols[3].success("📋 Policy Compliant")
+else:
+    g_cols[3].error("🚨 Policy Violation")
+
+with st.expander("View Guardrail Audit Logs"):
+    st.json(guardrails)
+
 st.caption(
     "Changing a case to Resolved updates its queue status only; reviewer approval and an audit record are not "
     "captured yet. Add those controls before treating a resolved status as a signed-off decision."

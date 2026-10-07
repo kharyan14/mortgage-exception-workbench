@@ -1,6 +1,6 @@
 # Mortgage Exception Workbench
 
-This is a fresh, synthetic mortgage document exception workbench built around the first three milestones from the starter pack.
+This is a fresh, synthetic mortgage document exception workbench.
 
 ## What is included
 - Semantic matching using sentence embeddings and cosine similarity
@@ -68,6 +68,15 @@ ollama pull llama3.1
 Set `WORKBENCH_LLM_MODEL` or `OLLAMA_HOST` to use a different local Ollama model/server. If Ollama is unavailable, the UI reports a generation error instead of pretending generated text exists. The Chroma index is persistent and can be rebuilt from `data/past_exceptions.csv`.
 
 Chunk size and overlap are configured by `DEFAULT_CHUNK_SIZE` and `DEFAULT_CHUNK_OVERLAP` in `src/exception_workbench.py` (80 words, 20-word overlap).
+
+## Safety & Policy Guardrails
+The system includes multi-layer AI and operational guardrails (`src/guardrails.py`) to safeguard inputs, RAG generation, and automated resolution suggestion:
+
+1. **Input Sanitization & PII Redaction**: Automatically detects and redacts sensitive PII (SSNs, email addresses, phone numbers) before sending context to LLM prompts.
+2. **Prompt Injection & Adversarial Defense**: Inspects OCR extracted text and incoming exception notes for jailbreak or prompt injection attempts (e.g. "ignore previous instructions", "system override", "approve loan immediately") and blocks ungrounded action suggestions.
+3. **Retrieval Grounding Verification**: Enforces minimum semantic similarity thresholds (0.55). Low confidence or ungrounded context automatically forces an `abstain` suggested action and mandates human review.
+4. **Output Policy & Authority Audit**: Scans generated LLM outputs to ensure the model does not make unauthorized credit approval claims, claim underwriting completion, or leak unredacted PII.
+5. **Real-time UI Audit**: The Streamlit interface displays real-time status badges for Input Safety, PII Redaction, Grounding Verification, and Policy Compliance alongside audit log details.
 
 ## Milestone 1: Matching brain
 Historical examples are chunked, indexed in ChromaDB, and searched semantically. The UI shows retrieved evidence chunks and their source cases.
