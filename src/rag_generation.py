@@ -84,10 +84,15 @@ def generate_grounded_response(
     if not answer:
         raise RuntimeError("Ollama returned an empty generated response.")
 
-    # Guardrail: Validate output against policy rules
-    output_guardrail = validate_llm_output(answer)
+    # Guardrail: Validate output against policy rules, citation hallucination, and groundedness
+    output_guardrail = validate_llm_output(
+        answer,
+        evidence_cases=[case_id for case_id, _, _ in evidence_items],
+        evidence_chunks=[chunk for _, chunk, _ in evidence_items],
+    )
     if not output_guardrail["is_safe"]:
         violations_str = "; ".join(output_guardrail["violations"])
         return f"[Guardrail Flagged Output]: {output_guardrail['sanitized_text']}\n\n(Safety Notice: {violations_str})"
 
     return output_guardrail["sanitized_text"]
+

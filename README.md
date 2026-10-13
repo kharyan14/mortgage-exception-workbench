@@ -72,11 +72,42 @@ Chunk size and overlap are configured by `DEFAULT_CHUNK_SIZE` and `DEFAULT_CHUNK
 ## Safety & Policy Guardrails
 The system includes multi-layer AI and operational guardrails (`src/guardrails.py`) to safeguard inputs, RAG generation, and automated resolution suggestion:
 
-1. **Input Sanitization & PII Redaction**: Automatically detects and redacts sensitive PII (SSNs, email addresses, phone numbers) before sending context to LLM prompts.
-2. **Prompt Injection & Adversarial Defense**: Inspects OCR extracted text and incoming exception notes for jailbreak or prompt injection attempts (e.g. "ignore previous instructions", "system override", "approve loan immediately") and blocks ungrounded action suggestions.
+1. **Input Sanitization & PII Redaction**: Automatically detects and redacts sensitive PII (SSNs, email addresses, phone numbers, credit card numbers, dates of birth) before sending context to LLM prompts.
+2. **Prompt Injection & Adversarial Defense**: Inspects OCR extracted text and incoming exception notes for jailbreaks, prompt injection attempts (e.g. "ignore previous instructions", "system override", "approve loan immediately", role manipulation, delimiter escapes like `[INST]`), and forces `abstain` with mandatory human review.
 3. **Retrieval Grounding Verification**: Enforces minimum semantic similarity thresholds (0.55). Low confidence or ungrounded context automatically forces an `abstain` suggested action and mandates human review.
-4. **Output Policy & Authority Audit**: Scans generated LLM outputs to ensure the model does not make unauthorized credit approval claims, claim underwriting completion, or leak unredacted PII.
-5. **Real-time UI Audit**: The Streamlit interface displays real-time status badges for Input Safety, PII Redaction, Grounding Verification, and Policy Compliance alongside audit log details.
+4. **Citation Hallucination Defense**: Validates all cited prior cases in LLM generation against actual retrieved evidence case IDs to prevent fabricated citations.
+5. **Output Policy & Authority Audit**: Scans generated LLM outputs to ensure the model does not make unauthorized credit approval claims, rate guarantees, claim underwriting completion, or leak unredacted PII.
+6. **Real-time UI Audit**: The Streamlit interface displays real-time status badges for Input Safety, PII Redaction, Grounding Verification, and Policy Compliance alongside audit log details.
+
+## Evaluation & Benchmark Suite
+The workbench includes a formal, automated evaluation and regression testing framework (`src/evals.py` and `scripts/run_evals.py`):
+
+- **Benchmark Dataset**: 23+ curated synthetic benchmark scenarios spanning Retrieval Recall, Out-of-Domain Boundaries, PII Leaks, Adversarial Prompt Injections, Policy Violations, and Citation Faithfulness.
+- **Automated Metric SLAs**:
+  - *Retrieval Hit Rate @ 1* (Target >= 80%, Achieved: 100%)
+  - *Retrieval Hit Rate @ 3* (Target >= 100%, Achieved: 100%)
+  - *Mean Reciprocal Rank / MRR* (Target >= 0.85, Achieved: 1.00)
+  - *Deterministic Action Accuracy* (Target >= 90%, Achieved: 100%)
+  - *PII Detection & Redaction Recall* (Target = 100%, Achieved: 100%)
+  - *Prompt Injection Defense Rate* (Target = 100%, Achieved: 100%)
+  - *Output Policy Enforcement Rate* (Target = 100%, Achieved: 100%)
+  - *Citation Fidelity / Hallucination Detection* (Target = 100%, Achieved: 100%)
+- **CLI Runner**:
+  ```bash
+  PYTHONPATH=. python scripts/run_evals.py
+  ```
+  Exports structured results to `data/eval_report.json` and `eval_report.md`.
+- **UI Benchmark Dashboard**: Reviewers can execute live benchmarks directly within Streamlit via the "🧪 Model Evaluations & Benchmark Suite" panel.
+
+
+## Role-Based Access Control (RBAC)
+The workbench enforces strict role-based access control directly inside the domain functions:
+
+- **Roles**:
+  - `reviewer`: Authorized to mutate cases (create new cases, edit case queue fields, update statuses, and delete cases).
+  - `viewer`: Read-only / look-only access.
+- **Function-Level Enforcement**: Protection is not merely hidden buttons in the UI. Mutating functions (`create_exception_case`, `update_exception_case`, `update_exception_status`, `delete_exception_case`) enforce permissions using `check_case_mutation_permission(role, action)`. Calling any mutation function with `role="viewer"` or any unauthorized role directly raises `PermissionError` before touching the database.
+- **UI State**: The Streamlit sidebar allows switching between `Reviewer` and `Viewer`. When in `Viewer` mode, editing and deletion controls are disabled, and attempted actions are refused with user-friendly error banners.
 
 ## Milestone 1: Matching brain
 Historical examples are chunked, indexed in ChromaDB, and searched semantically. The UI shows retrieved evidence chunks and their source cases.

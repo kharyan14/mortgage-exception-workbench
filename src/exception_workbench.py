@@ -27,10 +27,28 @@ QUEUE_COLUMNS = (
     "sensitive_case",
     "status",
 )
+ROLE_REVIEWER = "reviewer"
+ROLE_VIEWER = "viewer"
+ROLES = (ROLE_REVIEWER, ROLE_VIEWER)
 DEFAULT_CHUNK_SIZE = 80
 DEFAULT_CHUNK_OVERLAP = 20
 
 _model: Optional[SentenceTransformer] = None
+
+
+def check_case_mutation_permission(role: str, action: str = "modify") -> None:
+    """Enforces role-based access control. Only 'reviewer' can mutate cases.
+
+    Raises:
+        PermissionError: If the role is 'viewer' or any unauthorized role.
+    """
+    normalized_role = str(role or "").strip().lower()
+    if normalized_role != ROLE_REVIEWER:
+        raise PermissionError(
+            f"Permission denied: role '{role}' is not authorized to {action} cases. "
+            f"Only '{ROLE_REVIEWER}' can change cases; '{ROLE_VIEWER}' is read-only."
+        )
+
 
 
 def get_model() -> SentenceTransformer:
@@ -415,7 +433,9 @@ def update_exception_status(
     case_id: str,
     status: str,
     database_path: Optional[str | Path] = None,
+    role: str = ROLE_REVIEWER,
 ) -> None:
+    check_case_mutation_permission(role, action="update status for")
     if status not in QUEUE_STATUSES:
         raise ValueError(f"Unsupported queue status: {status}")
 
@@ -436,7 +456,9 @@ def update_exception_status(
 def create_exception_case(
     case: Dict[str, Any],
     database_path: Optional[str | Path] = None,
+    role: str = ROLE_REVIEWER,
 ) -> None:
+    check_case_mutation_permission(role, action="create")
     case_id = str(case.get("case_id", "")).strip()
     exception_text = str(case.get("exception_text", "")).strip()
     expected_type = str(case.get("expected_type", "")).strip()
@@ -474,7 +496,9 @@ def update_exception_case(
     case_id: str,
     updates: Dict[str, Any],
     database_path: Optional[str | Path] = None,
+    role: str = ROLE_REVIEWER,
 ) -> None:
+    check_case_mutation_permission(role, action="update")
     allowed_columns = {"exception_text", "expected_type", "expected_action", "sensitive_case", "status"}
     if not updates:
         return
@@ -505,7 +529,9 @@ def update_exception_case(
 def delete_exception_case(
     case_id: str,
     database_path: Optional[str | Path] = None,
+    role: str = ROLE_REVIEWER,
 ) -> None:
+    check_case_mutation_permission(role, action="delete")
     db_path = Path(database_path) if database_path is not None else _DEFAULT_DATABASE
     connection = sqlite3.connect(db_path)
     try:

@@ -5,11 +5,14 @@ import sqlite3
 from uuid import uuid4
 from typing import Tuple
 
+import pandas as pd
 import streamlit as st
 
 from src.document_ocr import describe_exception, extract_document_fields, extract_uploaded_document
 from src.exception_workbench import (
     QUEUE_STATUSES,
+    ROLE_REVIEWER,
+    ROLE_VIEWER,
     create_exception_case,
     delete_exception_case,
     find_similar_cases,
@@ -18,6 +21,7 @@ from src.exception_workbench import (
     update_exception_case,
 )
 from src.rag_generation import generate_grounded_response
+from src.evals import run_evaluation_suite
 
 EXCEPTION_TYPES = (
     "signature",
@@ -46,8 +50,25 @@ DEFAULT_ACTION_BY_TYPE = {
 
 
 st.set_page_config(page_title="Mortgage Exception Workbench", page_icon="📄", layout="wide")
+
+st.sidebar.header("Access & Permissions")
+current_role = st.sidebar.selectbox(
+    "Active Role",
+    options=[ROLE_REVIEWER, ROLE_VIEWER],
+    index=0,
+    format_func=lambda r: "Reviewer (can change cases)" if r == ROLE_REVIEWER else "Viewer (look only)",
+    help="Reviewers can edit, create, and delete cases. Viewers have read-only access and cannot mutate cases.",
+)
+if current_role == ROLE_VIEWER:
+    st.sidebar.info("👁️ **Viewer Mode**: Look only. Deletions, edits, and creation are refused.")
+else:
+    st.sidebar.success("✏️ **Reviewer Mode**: Authorized to change, update, and delete cases.")
+
 st.title("Mortgage Exception Workbench")
-st.caption("Synthetic mortgage-document cases · Reviewer remains in control")
+st.caption(
+    f"Synthetic mortgage-document cases · Active role: **{current_role.capitalize()}** "
+    f"({'can change cases' if current_role == ROLE_REVIEWER else 'look only'})"
+)
 
 st.subheader("Add a document")
 st.warning("Use synthetic documents only. Do not upload real borrower or lender documents to this prototype.")
@@ -122,7 +143,12 @@ if uploaded_file is not None:
                 index=SUGGESTED_ACTIONS.index(DEFAULT_ACTION_BY_TYPE[upload_draft["expected_type"]]),
             )
             sensitive_case = st.checkbox("Mark this case as sensitive")
-            create_submitted = st.form_submit_button("Add case to queue")
+            create_submitted = st.form_submit_button(
+                "Add case to queue",
+                disabled=(current_role == ROLE_VIEWER),
+            )
+        if current_role == ROLE_VIEWER:
+            st.caption("🔒 Look only mode: Viewers cannot add new cases.")
         if create_submitted:
             if not exception_text.strip():
                 st.error("Enter or correct the exception description before adding this case.")
@@ -137,9 +163,10 @@ if uploaded_file is not None:
                             "expected_action": expected_action,
                             "sensitive_case": sensitive_case,
                             "status": "New",
-                        }
+                        },
+                        role=current_role,
                     )
-                except (OSError, sqlite3.Error, ValueError) as error:
+                except (OSError, sqlite3.Error, ValueError, PermissionError) as error:
                     st.error(f"Could not add the extracted case: {error}")
                 else:
                     st.session_state.pop("upload_draft", None)
@@ -157,6 +184,10 @@ st.subheader("Exception queue")
 status_filter = st.selectbox("Filter queue", ("All", "New", "In Review", "Resolved"))
 visible_queue = queue if status_filter == "All" else queue[queue["status"] == status_filter]
 
+is_viewer = current_role == ROLE_VIEWER
+if is_viewer:
+    st.info("👁️ **Look only mode**: Queue editing is disabled for viewers. Unauthorized changes will be refused.")
+
 display_columns = [
     column
     for column in ("case_id", "expected_type", "exception_text", "expected_action", "status", "sensitive_case")
@@ -164,23 +195,25 @@ display_columns = [
 ]
 edited_visible_queue = st.data_editor(
     visible_queue[display_columns],
-    key=f"exception_queue_editor_{status_filter}",
+    key=f"exception_queue_editor_{status_filter}_{current_role}",
     column_config={
         "status": st.column_config.SelectboxColumn(
             "Status",
             options=list(QUEUE_STATUSES),
             required=True,
+            disabled=is_viewer,
         ),
-        "expected_type": st.column_config.TextColumn("Case type"),
-        "exception_text": st.column_config.TextColumn("Exception"),
+        "expected_type": st.column_config.TextColumn("Case type", disabled=is_viewer),
+        "exception_text": st.column_config.TextColumn("Exception", disabled=is_viewer),
         "expected_action": st.column_config.SelectboxColumn(
             "Expected action",
             options=list(SUGGESTED_ACTIONS),
             required=True,
+            disabled=is_viewer,
         ),
-        "sensitive_case": st.column_config.CheckboxColumn("Sensitive"),
+        "sensitive_case": st.column_config.CheckboxColumn("Sensitive", disabled=is_viewer),
     },
-    disabled=["case_id"],
+    disabled=True if is_viewer else ["case_id"],
     num_rows="fixed",
     hide_index=True,
     use_container_width=True,
@@ -201,8 +234,8 @@ for case_id in edited_rows.index:
 if changed_cases:
     try:
         for changed_case_id, changes in changed_cases:
-            update_exception_case(changed_case_id, changes)
-    except (KeyError, OSError, sqlite3.Error, ValueError) as error:
+            update_exception_case(changed_case_id, changes, role=current_role)
+    except (KeyError, OSError, sqlite3.Error, ValueError, PermissionError) as error:
         st.error(f"Could not save case changes: {error}")
         st.stop()
     st.rerun()
@@ -235,12 +268,18 @@ case_columns[2].write(f"**Sensitive case:** {'Yes' if case['sensitive_case'] els
 st.write(f"**Exception:** {case['exception_text']}")
 
 st.subheader("Delete case")
-st.warning("Deleting removes this case from the workbench database.")
-confirm_delete = st.checkbox(f"Confirm deletion of {selected_case_id}")
-if st.button("Delete selected case", disabled=not confirm_delete):
+if is_viewer:
+    st.info("🔒 Look only mode: Viewers cannot delete cases.")
+else:
+    st.warning("Deleting removes this case from the workbench database.")
+confirm_delete = st.checkbox(
+    f"Confirm deletion of {selected_case_id}",
+    disabled=is_viewer,
+)
+if st.button("Delete selected case", disabled=not confirm_delete or is_viewer):
     try:
-        delete_exception_case(selected_case_id)
-    except (KeyError, OSError, sqlite3.Error) as error:
+        delete_exception_case(selected_case_id, role=current_role)
+    except (KeyError, OSError, sqlite3.Error, PermissionError) as error:
         st.error(f"Could not delete case: {error}")
     else:
         st.success(f"Deleted {selected_case_id}.")
@@ -337,6 +376,38 @@ else:
 
 with st.expander("View Guardrail Audit Logs"):
     st.json(guardrails)
+
+st.divider()
+st.subheader("🧪 Model Evaluations & Benchmark Suite")
+st.caption("Automated regression testing across retrieval hit rate, deterministic action routing accuracy, and guardrail defenses.")
+
+if st.button("Run Benchmark Evaluation Suite", key="run_evals_btn"):
+    with st.spinner("Running 20+ benchmark test cases across retrieval, guardrails, and policy enforcement..."):
+        st.session_state["eval_results"] = run_evaluation_suite()
+
+eval_results = st.session_state.get("eval_results")
+if eval_results:
+    m = eval_results["metrics"]
+    e_cols = st.columns(4)
+    e_cols[0].metric("Retrieval Recall @ 3", f"{m['retrieval_hit_rate_at_3']:.0%}")
+    e_cols[1].metric("Action Accuracy", f"{m['action_routing_accuracy']:.0%}")
+    e_cols[2].metric("Injection Defense", f"{m['injection_defense_rate']:.0%}")
+    e_cols[3].metric("PII Protection", f"{m['pii_detection_recall']:.0%}")
+
+    pass_status = "✅ All SLA Targets Met" if eval_results["all_slas_met"] else "⚠️ Some Targets Failed"
+    st.info(f"**Benchmark Summary:** {eval_results['total_passed']}/{eval_results['total_test_cases']} tests passed ({m['overall_pass_rate']:.1%}) · {pass_status}")
+
+    with st.expander("View Full Benchmark Test Cases & Details", expanded=False):
+        eval_df = pd.DataFrame([
+            {
+                "Test ID": r["id"],
+                "Category": r["category"],
+                "Query / Input": (r.get("query") or r.get("text") or "")[:60] + "...",
+                "Status": "✅ PASS" if r["passed"] else "❌ FAIL",
+            }
+            for r in eval_results["case_results"]
+        ])
+        st.dataframe(eval_df, hide_index=True, use_container_width=True)
 
 st.caption(
     "Changing a case to Resolved updates its queue status only; reviewer approval and an audit record are not "

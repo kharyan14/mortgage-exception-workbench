@@ -22,6 +22,8 @@ from src.exception_workbench import (
     load_exception_queue,
     update_exception_case,
     update_exception_status,
+    ROLE_REVIEWER,
+    ROLE_VIEWER,
 )
 from src.rag_generation import generate_grounded_response
 
@@ -413,3 +415,120 @@ def test_delete_unknown_case_reports_error(tmp_path):
 
     with pytest.raises(KeyError, match="CASE-999"):
         delete_exception_case("CASE-999", database_path=database_path)
+
+
+def test_viewer_role_refuses_delete_exception_case(tmp_path):
+    seed_path = tmp_path / "incoming.csv"
+    database_path = tmp_path / "workbench.db"
+    seed_path.write_text(
+        "case_id,exception_text,expected_type,expected_action,sensitive_case\n"
+        'CASE-VIEWER-DEL,"Missing signature",signature,request_missing_document,False\n'
+    )
+    load_exception_queue(database_path=database_path, seed_path=seed_path)
+
+    # Calling delete as a viewer must raise PermissionError directly in the function
+    with pytest.raises(PermissionError, match="not authorized to delete"):
+        delete_exception_case("CASE-VIEWER-DEL", database_path=database_path, role=ROLE_VIEWER)
+
+    # Confirm case was NOT deleted
+    queue = load_exception_queue(database_path=database_path, seed_path=seed_path)
+    assert "CASE-VIEWER-DEL" in queue["case_id"].tolist()
+
+
+def test_viewer_role_refuses_create_exception_case(tmp_path):
+    database_path = tmp_path / "workbench.db"
+    new_case = {
+        "case_id": "CASE-VIEWER-CREATE",
+        "exception_text": "Viewer attempting to create case",
+        "expected_type": "signature",
+        "expected_action": "request_missing_document",
+        "sensitive_case": False,
+        "status": "New",
+    }
+    with pytest.raises(PermissionError, match="not authorized to create"):
+        create_exception_case(new_case, database_path=database_path, role=ROLE_VIEWER)
+
+
+def test_viewer_role_refuses_update_exception_case(tmp_path):
+    seed_path = tmp_path / "incoming.csv"
+    database_path = tmp_path / "workbench.db"
+    seed_path.write_text(
+        "case_id,exception_text,expected_type,expected_action,sensitive_case\n"
+        'CASE-VIEWER-UPD,"Original exception text",signature,request_missing_document,False\n'
+    )
+    load_exception_queue(database_path=database_path, seed_path=seed_path)
+
+    with pytest.raises(PermissionError, match="not authorized to update"):
+        update_exception_case(
+            "CASE-VIEWER-UPD",
+            {"exception_text": "Unauthorized modification"},
+            database_path=database_path,
+            role=ROLE_VIEWER,
+        )
+
+    queue = load_exception_queue(database_path=database_path, seed_path=seed_path).set_index("case_id")
+    assert queue.loc["CASE-VIEWER-UPD", "exception_text"] == "Original exception text"
+
+
+def test_viewer_role_refuses_update_exception_status(tmp_path):
+    seed_path = tmp_path / "incoming.csv"
+    database_path = tmp_path / "workbench.db"
+    seed_path.write_text(
+        "case_id,exception_text,expected_type,expected_action,sensitive_case\n"
+        'CASE-VIEWER-STAT,"Missing signature",signature,request_missing_document,False\n'
+    )
+    load_exception_queue(database_path=database_path, seed_path=seed_path)
+
+    with pytest.raises(PermissionError, match="not authorized to update status"):
+        update_exception_status("CASE-VIEWER-STAT", "Resolved", database_path=database_path, role=ROLE_VIEWER)
+
+    queue = load_exception_queue(database_path=database_path, seed_path=seed_path).set_index("case_id")
+    assert queue.loc["CASE-VIEWER-STAT", "status"] == "New"
+
+
+def test_reviewer_role_explicitly_permits_mutations(tmp_path):
+    database_path = tmp_path / "workbench.db"
+    seed_path = tmp_path / "incoming.csv"
+    seed_path.write_text(
+        "case_id,exception_text,expected_type,expected_action,sensitive_case\n"
+        'CASE-REV-1,"Missing signature",signature,request_missing_document,False\n'
+    )
+    load_exception_queue(database_path=database_path, seed_path=seed_path)
+
+    # Reviewer can update status
+    update_exception_status("CASE-REV-1", "In Review", database_path=database_path, role=ROLE_REVIEWER)
+
+    # Reviewer can update fields
+    update_exception_case(
+        "CASE-REV-1",
+        {"exception_text": "Updated by reviewer"},
+        database_path=database_path,
+        role=ROLE_REVIEWER,
+    )
+
+    # Reviewer can create new case
+    create_exception_case(
+        {
+            "case_id": "CASE-REV-2",
+            "exception_text": "Created by reviewer",
+            "expected_type": "address",
+            "expected_action": "propose_field_correction",
+            "sensitive_case": False,
+            "status": "New",
+        },
+        database_path=database_path,
+        role=ROLE_REVIEWER,
+    )
+
+    # Reviewer can delete case
+    delete_exception_case("CASE-REV-1", database_path=database_path, role=ROLE_REVIEWER)
+
+    queue = load_exception_queue(database_path=database_path, seed_path=seed_path)
+    assert "CASE-REV-1" not in queue["case_id"].tolist()
+    assert "CASE-REV-2" in queue["case_id"].tolist()
+
+
+def test_unauthorized_role_refuses_deletion():
+    with pytest.raises(PermissionError):
+        delete_exception_case("ANY-CASE", role="unauthorized_guest")
+
