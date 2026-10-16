@@ -9,3 +9,4 @@ workbench.db
 workbench.db-shm
 workbench.db-wal
 data/vector_store/
+.env

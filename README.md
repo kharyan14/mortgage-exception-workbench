@@ -1,19 +1,19 @@
 # Mortgage Exception Workbench
 
-This is a fresh, synthetic mortgage document exception workbench.
+This is a synthetic mortgage document exception workbench for human-in-the-loop review operations.
+
+> **Interested in the AI/ML architecture?** Read [AI_SYSTEM_DESIGN.md](AI_SYSTEM_DESIGN.md) for a comprehensive engineering deep dive into the 2-stage retrieval pipeline (bi-encoder + cross-encoder), online feedback bias loop, streaming RAG generation, and defense-in-depth safety guardrails.
 
 ## What is included
-- Semantic matching using sentence embeddings and cosine similarity
-- Historical mortgage exception dataset with approved resolutions
-- Resolution suggestion engine with a strict JSON output shape
-- OCR/text extraction for scanned images and PDF documents
-- Synthetic scanned application, income-document checklist, and property-address comparison samples
-- Field extraction and end-to-end document-to-suggestion intake
-- Streamlit document upload connected to OCR and case creation
-- SQLite-backed create, read, update, and delete operations for queue cases
-- Persistent exception queue with New and In Review statuses
-- Streamlit UI for queue browsing, case selection, semantic matches, and suggestions
-- Simple validation tests for matching and routing behavior
+- **Two-stage neural retrieval**: Fast vector recall via MiniLM bi-encoder + precision cross-encoder re-ranking (`ms-marco-MiniLM-L-6-v2`)
+- **Reviewer feedback loop**: Online accept/reject bias learning without GPU fine-tuning overhead
+- **Streaming RAG generation**: Token-by-token local LLM generation via Ollama with prompt sanitization and citation fidelity checks
+- **Defense-in-depth guardrails**: PII redaction, prompt injection interception, grounding thresholds, and output policy auditing
+- **Append-only case audit log**: Every mutation, edit, status transition, and deletion is recorded atomically with reviewer ID, timestamp, and payload
+- **Strict SQLite data integrity**: Controlled schema with database-level `CHECK` constraints, composite indexes, and versioned migrations
+- **Google OAuth 2.0 & RBAC**: Real identity provider backing role claims, with a zero-config dev mode fallback
+- **OCR document extraction**: PyMuPDF + Tesseract for scanned PDFs and images with automated anomaly detection
+- **Automated benchmark suite**: 20+ regression test cases measuring Hit Rate @ K, routing accuracy, and safety SLAs
 
 ## OCR document intake
 Scanned PNG/JPEG/TIFF/BMP/WebP and PDFs are accepted. PDFs with an embedded text layer use that text; scanned PDF pages are rendered locally and passed through Tesseract OCR. OCR returns the recognized text, extraction method, an indicative OCR confidence, and labeled fields when present. The extracted exception is then passed to the same matching and suggestion flow.
@@ -115,8 +115,8 @@ Historical examples are chunked, indexed in ChromaDB, and searched semantically.
 ## Milestone 2: Resolution suggestion
 Retrieved chunks ground a local LLM reviewer note. The allowed suggested action remains deterministic and is accompanied by the similarity score and human-review flag.
 
-## Milestone 3: Exception queue and UI
-The app stores its queue in `workbench.db`, using one SQLite table named `exception_queue`. On first run, if that table is empty, it is seeded once from `data/exception_queue.csv`; after seeding, SQLite is the source of truth and the CSV is not read again. The app loads queue rows with pandas `read_sql`. Its CRUD flow creates cases from reviewed OCR text, reads and filters queue cases, updates editable fields with SQL `UPDATE`, and deletes a selected case with SQL `DELETE`. Setting a status to Resolved changes the queue only; it does not yet record approval, edits/rejections, or an audit log. Add those sign-off behaviors before treating that status as a human-approved resolution.
+## Milestone 3: Exception queue, migrations, and audit trail
+The app stores its queue in `workbench.db`, managed through versioned migrations (`PRAGMA user_version = 3`). The schema enforces strict data-integrity `CHECK` constraints, composite indexing for performant status-filtering, an append-only `case_event_log` table tracking all mutations atomically with actor and timestamp, and a `suggestion_feedback` table powering the online retrieval bias feedback loop.
 
 Start the UI:
 

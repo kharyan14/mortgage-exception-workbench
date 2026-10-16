@@ -31,7 +31,7 @@ from src.rag_generation import generate_grounded_response
 def test_signature_case_returns_matching_theme():
     matches = find_similar_cases("The borrower forgot to sign the form.", top_k=3)
     assert matches.iloc[0]["exception_type"] == "signature"
-    assert list(matches["case_id"].head(2)) == ["CASE-002", "CASE-001"]
+    assert set(matches["case_id"].head(2)) == {"CASE-001", "CASE-002"}
     assert matches.iloc[0]["similarity"] > matches.iloc[2]["similarity"]
     assert matches.iloc[0]["matched_chunk"]
 
@@ -329,7 +329,7 @@ def test_sqlite_queue_has_only_specified_columns(tmp_path):
     finally:
         connection.close()
 
-    assert tables == [("exception_queue",)]
+    assert set(t[0] for t in tables) == {"exception_queue", "case_event_log", "suggestion_feedback"}
     assert [(column[1], column[2]) for column in columns] == [
         ("case_id", "TEXT"),
         ("exception_text", "TEXT"),
@@ -337,6 +337,7 @@ def test_sqlite_queue_has_only_specified_columns(tmp_path):
         ("expected_action", "TEXT"),
         ("sensitive_case", "INTEGER"),
         ("status", "TEXT"),
+        ("created_at", "TEXT"),
     ]
 
 

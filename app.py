@@ -3,41 +3,33 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from uuid import uuid4
-from typing import Tuple
 
 import pandas as pd
 import streamlit as st
 
 from src.document_ocr import describe_exception, extract_document_fields, extract_uploaded_document
 from src.exception_workbench import (
+    EXCEPTION_ACTIONS,
+    EXCEPTION_TYPES,
     QUEUE_STATUSES,
     ROLE_REVIEWER,
     ROLE_VIEWER,
     create_exception_case,
     delete_exception_case,
     find_similar_cases,
+    load_case_event_log,
     load_exception_queue,
+    record_suggestion_feedback,
     suggest_resolution_for_case,
     update_exception_case,
 )
-from src.rag_generation import generate_grounded_response
+from src.rag_generation import generate_grounded_response_stream
+from src.auth import require_auth, logout
 from src.evals import run_evaluation_suite
 
-EXCEPTION_TYPES = (
-    "signature",
-    "income",
-    "address",
-    "missing_document",
-    "conflicting_values",
-    "low_confidence_extraction",
-    "other",
-)
-SUGGESTED_ACTIONS = (
-    "request_missing_document",
-    "propose_field_correction",
-    "route_to_specialist",
-    "abstain",
-)
+# EXCEPTION_TYPES and SUGGESTED_ACTIONS are imported from exception_workbench
+# so the UI vocabulary stays in sync with the DB CHECK constraints.
+SUGGESTED_ACTIONS = EXCEPTION_ACTIONS
 DEFAULT_ACTION_BY_TYPE = {
     "signature": "request_missing_document",
     "income": "request_missing_document",
@@ -51,22 +43,31 @@ DEFAULT_ACTION_BY_TYPE = {
 
 st.set_page_config(page_title="Mortgage Exception Workbench", page_icon="📄", layout="wide")
 
-st.sidebar.header("Access & Permissions")
-current_role = st.sidebar.selectbox(
-    "Active Role",
-    options=[ROLE_REVIEWER, ROLE_VIEWER],
-    index=0,
-    format_func=lambda r: "Reviewer (can change cases)" if r == ROLE_REVIEWER else "Viewer (look only)",
-    help="Reviewers can edit, create, and delete cases. Viewers have read-only access and cannot mutate cases.",
-)
-if current_role == ROLE_VIEWER:
-    st.sidebar.info("👁️ **Viewer Mode**: Look only. Deletions, edits, and creation are refused.")
-else:
-    st.sidebar.success("✏️ **Reviewer Mode**: Authorized to change, update, and delete cases.")
+# ── Authentication ────────────────────────────────────────────────────────────
+# require_auth() returns the Identity dict and shows the OAuth login button
+# (or the legacy role selector in dev mode).  Everything below this line is
+# only reached once the user is authenticated.
+identity = require_auth()
+current_role = identity["role"]
+actor_id = identity["email"]   # real email when OAuth is active; role string in dev mode
+
+# Sidebar: identity card + logout
+with st.sidebar:
+    st.header("Access & Permissions")
+    if identity["authenticated"]:
+        st.success(f"✅ Signed in as **{identity['name']}**  \n`{actor_id}`")
+        if st.button("Sign out", key="logout_btn"):
+            logout()
+            st.rerun()
+    if current_role == ROLE_VIEWER:
+        st.info("👁️ **Viewer Mode**: Look only. Deletions, edits, and creation are refused.")
+    else:
+        st.success("✏️ **Reviewer Mode**: Authorized to change, update, and delete cases.")
 
 st.title("Mortgage Exception Workbench")
 st.caption(
-    f"Synthetic mortgage-document cases · Active role: **{current_role.capitalize()}** "
+    f"Synthetic mortgage-document cases · Signed in as **{identity['name']}** "
+    f"· Role: **{current_role.capitalize()}** "
     f"({'can change cases' if current_role == ROLE_REVIEWER else 'look only'})"
 )
 
@@ -165,6 +166,8 @@ if uploaded_file is not None:
                             "status": "New",
                         },
                         role=current_role,
+                        actor=actor_id,
+                        reason="Created from uploaded document",
                     )
                 except (OSError, sqlite3.Error, ValueError, PermissionError) as error:
                     st.error(f"Could not add the extracted case: {error}")
@@ -174,15 +177,20 @@ if uploaded_file is not None:
                     st.success(f"Added {new_case_id} to the exception queue.")
                     st.rerun()
 
+st.subheader("Exception queue")
+status_filter = st.selectbox("Filter queue", ("All", "New", "In Review", "Resolved"))
+
+# DD4: filtering is pushed into SQL so pandas never loads unwanted rows.
 try:
-    queue = load_exception_queue()
+    queue = load_exception_queue(
+        status_filter=None if status_filter == "All" else status_filter,
+        order_by="created_at",
+    )
 except (OSError, ValueError) as error:
     st.error(f"Could not load the exception queue: {error}")
     st.stop()
 
-st.subheader("Exception queue")
-status_filter = st.selectbox("Filter queue", ("All", "New", "In Review", "Resolved"))
-visible_queue = queue if status_filter == "All" else queue[queue["status"] == status_filter]
+visible_queue = queue  # already filtered by SQL
 
 is_viewer = current_role == ROLE_VIEWER
 if is_viewer:
@@ -203,7 +211,12 @@ edited_visible_queue = st.data_editor(
             required=True,
             disabled=is_viewer,
         ),
-        "expected_type": st.column_config.TextColumn("Case type", disabled=is_viewer),
+        "expected_type": st.column_config.SelectboxColumn(
+            "Case type",
+            options=list(EXCEPTION_TYPES),
+            required=True,
+            disabled=is_viewer,
+        ),
         "exception_text": st.column_config.TextColumn("Exception", disabled=is_viewer),
         "expected_action": st.column_config.SelectboxColumn(
             "Expected action",
@@ -234,14 +247,25 @@ for case_id in edited_rows.index:
 if changed_cases:
     try:
         for changed_case_id, changes in changed_cases:
-            update_exception_case(changed_case_id, changes, role=current_role)
+            update_exception_case(
+                changed_case_id,
+                changes,
+                role=current_role,
+                actor=actor_id,
+                reason="Inline queue edit",
+            )
     except (KeyError, OSError, sqlite3.Error, ValueError, PermissionError) as error:
         st.error(f"Could not save case changes: {error}")
         st.stop()
     st.rerun()
 
 total_cases = len(visible_queue)
-status_counts = queue["status"].value_counts()
+# Counts always reflect the whole queue, not just the filtered view.
+try:
+    full_queue_for_counts = load_exception_queue()
+    status_counts = full_queue_for_counts["status"].value_counts()
+except (OSError, ValueError):
+    status_counts = queue["status"].value_counts()
 
 metric_columns = st.columns(4)
 metric_columns[0].metric("Cases shown", total_cases)
@@ -276,14 +300,48 @@ confirm_delete = st.checkbox(
     f"Confirm deletion of {selected_case_id}",
     disabled=is_viewer,
 )
+delete_reason = st.text_input(
+    "Reason for deletion (recorded in audit log)",
+    placeholder="e.g. Duplicate entry, entered in error",
+    disabled=is_viewer or not confirm_delete,
+    key="delete_reason_input",
+)
 if st.button("Delete selected case", disabled=not confirm_delete or is_viewer):
     try:
-        delete_exception_case(selected_case_id, role=current_role)
+        delete_exception_case(
+            selected_case_id,
+            role=current_role,
+            actor=actor_id,
+            reason=delete_reason.strip() or "No reason provided",
+        )
     except (KeyError, OSError, sqlite3.Error, PermissionError) as error:
         st.error(f"Could not delete case: {error}")
     else:
         st.success(f"Deleted {selected_case_id}.")
         st.rerun()
+
+st.subheader("📋 Audit trail")
+try:
+    event_log = load_case_event_log(case_id=selected_case_id)
+except (OSError, sqlite3.Error) as _log_err:
+    event_log = None
+with st.expander(f"Event log for {selected_case_id}", expanded=False):
+    if event_log is None or event_log.empty:
+        st.info("No events recorded yet for this case.")
+    else:
+        st.dataframe(
+            event_log[["occurred_at", "event_type", "actor", "reason", "payload"]].rename(
+                columns={
+                    "occurred_at": "When (UTC)",
+                    "event_type": "Event",
+                    "actor": "Actor",
+                    "reason": "Reason",
+                    "payload": "Changed fields",
+                }
+            ),
+            hide_index=True,
+            use_container_width=True,
+        )
 
 st.subheader("Similar approved cases")
 try:
@@ -293,22 +351,59 @@ except (OSError, ValueError, RuntimeError) as error:
     st.error(f"Could not generate matching results: {error}")
     st.stop()
 
+# Show bi-encoder similarity AND cross-encoder rerank_score when available.
+_display_cols = ["case_id", "exception_type", "exception_text", "approved_resolution", "matched_chunk"]
+_rename = {
+    "case_id": "Past case",
+    "exception_type": "Type",
+    "exception_text": "Past exception",
+    "approved_resolution": "Approved resolution",
+    "matched_chunk": "Retrieved evidence chunk",
+    "similarity": "Bi-encoder sim.",
+    "rerank_score": "Re-rank score",
+}
+for _col in ("similarity", "rerank_score"):
+    if _col in matches.columns:
+        _display_cols.append(_col)
+
 st.dataframe(
-    matches[
-        ["case_id", "exception_type", "exception_text", "approved_resolution", "matched_chunk", "similarity"]
-    ].rename(
-        columns={
-            "case_id": "Past case",
-            "exception_type": "Type",
-            "exception_text": "Past exception",
-            "approved_resolution": "Approved resolution",
-            "matched_chunk": "Retrieved evidence chunk",
-            "similarity": "Similarity",
-        }
-    ),
+    matches[[c for c in _display_cols if c in matches.columns]].rename(columns=_rename),
     hide_index=True,
     use_container_width=True,
 )
+
+# ── Feedback thumbs per matched case ─────────────────────────────────────────
+if not matches.empty and not is_viewer:
+    st.caption("Rate each suggestion to improve future re-ranking:")
+    for _i, _mrow in matches.iterrows():
+        _mid = str(_mrow["case_id"])
+        _fb_cols = st.columns([6, 1, 1])
+        _fb_cols[0].write(f"**{_mid}** — {str(_mrow.get('exception_text', ''))[:80]}…")
+        if _fb_cols[1].button("👍", key=f"accept_{selected_case_id}_{_mid}_{_i}",
+                              help="This suggestion was helpful"):
+            try:
+                record_suggestion_feedback(
+                    case_id=selected_case_id,
+                    matched_case_id=_mid,
+                    verdict="accept",
+                    actor=actor_id,
+                )
+                st.toast(f"Accepted {_mid} — re-rank will improve over time.")
+            except (OSError, sqlite3.Error, ValueError) as _err:
+                st.error(f"Could not save feedback: {_err}")
+        if _fb_cols[2].button("👎", key=f"reject_{selected_case_id}_{_mid}_{_i}",
+                              help="This suggestion was not helpful"):
+            try:
+                record_suggestion_feedback(
+                    case_id=selected_case_id,
+                    matched_case_id=_mid,
+                    verdict="reject",
+                    actor=actor_id,
+                )
+                st.toast(f"Rejected {_mid} — re-rank will downweight this match.")
+            except (OSError, sqlite3.Error, ValueError) as _err:
+                st.error(f"Could not save feedback: {_err}")
+
 
 st.subheader("RAG-generated evidence summary")
 if matches.empty:
@@ -323,18 +418,19 @@ else:
         for _, row in matches.iterrows()
     )
 
-    @st.cache_data(show_spinner=False)
-    def cached_grounded_response(query: str, retrieved_evidence: Tuple[Tuple[str, str, str], ...]) -> str:
-        return generate_grounded_response(query, retrieved_evidence)
-
     try:
-        with st.spinner("Generating an evidence-grounded note with the local Ollama model..."):
-            grounded_response = cached_grounded_response(case["exception_text"], evidence)
+        # DD: stream tokens one-by-one for responsiveness.
+        with st.spinner("Connecting to Ollama…"):
+            # Materialise generator so we can pass it to write_stream.
+            _stream_gen = generate_grounded_response_stream(case["exception_text"], evidence)
+        st.write_stream(_stream_gen)
+        st.caption(
+            "Generated locally with Ollama from the retrieved chunks above; "
+            "verify evidence before acting."
+        )
     except (OSError, RuntimeError, ValueError) as error:
         st.error(f"RAG generation failed: {error}")
-    else:
-        st.write(grounded_response)
-        st.caption("Generated locally with Ollama from the retrieved chunks shown above; verify evidence before acting.")
+
 
 st.subheader("Suggested next step")
 suggestion_columns = st.columns(3)
@@ -410,6 +506,6 @@ if eval_results:
         st.dataframe(eval_df, hide_index=True, use_container_width=True)
 
 st.caption(
-    "Changing a case to Resolved updates its queue status only; reviewer approval and an audit record are not "
-    "captured yet. Add those controls before treating a resolved status as a signed-off decision."
+    "All status changes, edits, and deletions are recorded in the case_event_log table with actor and timestamp. "
+    "expected_type and expected_action are reviewer labels — not model outputs."
 )
