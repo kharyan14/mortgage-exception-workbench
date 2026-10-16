@@ -323,6 +323,19 @@ def build_resolution_suggestion(
     top_k: int = 3,
     matches: Optional[pd.DataFrame] = None,
 ) -> Dict[str, Any]:
+    """Build a deterministic resolution suggestion based on retrieved evidence and guardrails.
+
+    Operational logic:
+    1. Retrieves similar precedent cases if not supplied.
+    2. Runs multi-stage guardrail evaluation (PII, injection, grounding).
+    3. If confidence < 0.55 (safety threshold) or injection detected: forces 'abstain'.
+    4. If confidence < 0.80 or sensitive_case=True: flags human_review_required=True.
+    5. Normalizes approved historical resolution into a standardized operational action.
+
+    Returns:
+        Dict containing case_id, exception_type, suggested_action, reason,
+        closest_case_id, confidence, human_review_required, and guardrails audit.
+    """
     matches = matches if matches is not None else find_similar_cases(exception_text, top_k=top_k)
     guardrail_eval = evaluate_guardrails(
         exception_text=exception_text,
