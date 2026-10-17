@@ -1,6 +1,22 @@
 # AI System Design: Mortgage Exception Workbench
 ### Production RAG & Decision Support for Zero-Tolerance Document Operations
 
+## 💡 The Big Picture: A Simple Analogy
+Imagine walking into a bank to secure a home loan. A human underwriter reviews your paperwork. Suddenly, an irregularity pops up—say, a mismatch on a tax document or an unclear signature. 
+
+Normally, the underwriter would have to pause, dig through filing cabinets or dusty digital archives containing thousands of past mortgage files, find similar historical cases, figure out how they were handled, and ensure compliance with strict banking rules. This manual lookup takes hours.
+
+### Enter the AI Assistant (The Research Partner)
+The **Mortgage Exception Workbench** acts as an ultra-fast research assistant for that human underwriter:
+1. **The Instant Search:** When a new document discrepancy lands on the desk, the assistant instantly searches thousands of past cases in milliseconds and pulls out the 3 most relevant historical precedents.
+2. **The Summarizer:** It uses an AI model (running locally on your computer) to write a clear, plain-English summary explaining *why* those past cases match your current situation.
+3. **The Guardrails:** Because AI can sometimes be overly confident or make things up (known as "hallucinating"), strict safety guardrails block the AI from ever making final decisions. The AI is **strictly advisory**—it can only suggest and summarize.
+
+### The Golden Rule: AI Suggests, Humans Decide
+* **Can the AI approve a loan?** ❌ **Never.**
+* **Can the AI scrub sensitive personal data (like Social Security numbers)?** ✅ **Automatically, before anyone sees it.**
+* **Who makes the final call?** ✅ **The human reviewer.** Every single decision is locked into a permanent, tamper-proof record (an audit trail) so regulators always know exactly who approved what and why.
+
 > **For AI Engineers, Researchers, & System Architects:**
 > This document explains the machine learning architecture, retrieval pipelines, safety guardrails, and system design principles behind the Mortgage Exception Workbench. You don't need to know mortgage underwriting or banking regulations to appreciate the core challenge: **how to build trustworthy, low-latency, and auditable AI systems for high-consequence operations where hallucinations or silent failures carry legal and financial liability.**
 
