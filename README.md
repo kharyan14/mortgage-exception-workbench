@@ -1,3 +1,15 @@
+<div align="center">
+
+# 🏦 Mortgage Exception Workbench
+### Human-in-the-Review Operational Platform with Local RAG & Multi-Layer Safety Guardrails
+
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%25-blue.svg)](https://www.python.org/)
+[![Streamlit](https://img.shields.io/badge/streamlit-1.30%2B-red.svg)](https://streamlit.io)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Tests: Passing](https://img.shields.io/badge/tests-passing-success.svg)](./tests/)
+[![Evaluation: 100% SLA](https://img.shields.io/badge/evals-100%25%20SLA-informational.svg)](./eval_report.md)
+
+</div>
 # Mortgage Exception Workbench
 
 This is a synthetic mortgage document exception workbench for human-in-the-loop review operations.
